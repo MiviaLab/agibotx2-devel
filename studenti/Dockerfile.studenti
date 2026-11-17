@@ -1,0 +1,108 @@
+# Student image: the official AgiBot dev image + an SSH server and a non-root
+# "studente" user who can use sudo *inside* the container (apt install etc.).
+# The container is owned by the unprivileged host user "studenti", so container
+# root maps to that user on the host, not to agi.
+FROM localhost/agi/aimdk-dev:dev
+
+# The base image has WORKDIR /home/agi: leave it, otherwise every RUN step below
+# would recreate /home/agi (removed later on purpose).
+WORKDIR /
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends openssh-server sudo && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
+    # Host keys are generated at first start into a persistent volume, never baked in.
+    rm -f /etc/ssh/ssh_host_* && \
+    # pam_loginuid fails inside rootless containers and would block logins.
+    sed -i -E 's/^(session\s+)required(\s+pam_loginuid\.so)/\1optional\2/' /etc/pam.d/sshd
+
+# ---------------------------------------------------------------------------
+# GPU deep learning stack: PyTorch (CUDA) + Ultralytics YOLO.
+# Matches the robot: Jetson Orin NX, JetPack 6.2 (L4T R36.4), CUDA 12.6.
+# The GPU driver, cuDNN 9.3 and TensorRT 10.7 come from the host at runtime
+# (--device nvidia.com/gpu=all): do NOT install libcudnn here, the CDI mounts
+# over it ("Invalid cross-device link"). The CUDA runtime libraries are not
+# mounted, so the ones PyTorch links against are installed from NVIDIA's
+# Jetson apt repo (same r36.4 repo and versions as the host).
+# After a firmware update that changes JetPack, update JETPACK_REPO / wheels.
+# ---------------------------------------------------------------------------
+ARG JETPACK_REPO=r36.4
+ARG CUDA_VER=12-6
+# NVIDIA PyTorch for JetPack 6 (CUDA 12.6) + torchvision built for that torch.
+ARG TORCH_WHL=https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl
+ARG TORCHVISION_WHL=https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvision-0.20.0a0+afc54f7-cp310-cp310-linux_aarch64.whl
+# cuSPARSELt: required by this torch build, not in the Jetson apt repo.
+ARG CUSPARSELT_URL=https://developer.download.nvidia.com/compute/cusparselt/redist/libcusparse_lt/linux-aarch64/libcusparse_lt-linux-aarch64-0.7.1.0-archive.tar.xz
+ARG ULTRALYTICS_VER=8.4.215
+# numpy must stay 1.x and match the host (1.26.1): the host /opt/ros CMake
+# configs use the host numpy headers, which run-studenti.sh mounts read-only
+# over /usr/local/lib/python3.10/dist-packages/numpy/core/include.
+ARG NUMPY_VER=1.26.1
+
+RUN curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
+        -o /etc/apt/trusted.gpg.d/jetson-ota-public.asc && \
+    echo "deb https://repo.download.nvidia.com/jetson/common ${JETPACK_REPO} main" \
+        > /etc/apt/sources.list.d/nvidia-jetson-common.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cuda-cudart-${CUDA_VER} cuda-nvrtc-${CUDA_VER} cuda-cupti-${CUDA_VER} cuda-nvtx-${CUDA_VER} \
+        libcublas-${CUDA_VER} libcufft-${CUDA_VER} libcurand-${CUDA_VER} \
+        libcusolver-${CUDA_VER} libcusparse-${CUDA_VER} libnvjitlink-${CUDA_VER} \
+        libopenblas0 && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
+    curl -fsSL "${CUSPARSELT_URL}" | tar -xJ -C /tmp && \
+    cp -P /tmp/libcusparse_lt-*/lib/libcusparseLt.so* /usr/local/cuda/targets/aarch64-linux/lib/ && \
+    rm -rf /tmp/libcusparse_lt-* && \
+    ldconfig
+
+# Python packages. The constraints keep pip from replacing numpy/torch with
+# incompatible versions; opencv-python is NOT installed (Ultralytics works with
+# the system OpenCV 4.5.4 used by ROS / cv_bridge), hence --no-deps for it.
+RUN printf 'numpy==%s\n' "${NUMPY_VER}" > /tmp/constraints.txt && \
+    pip3 install --no-cache-dir -c /tmp/constraints.txt "numpy==${NUMPY_VER}" && \
+    pip3 install --no-cache-dir -c /tmp/constraints.txt "${TORCH_WHL}" "${TORCHVISION_WHL}" && \
+    pip3 show torch torchvision | sed -nE 's/^Name: (.*)/\1/p; s/^Version: (.*)/==\1/p' | paste -d '' - - >> /tmp/constraints.txt && \
+    cat /tmp/constraints.txt && \
+    pip3 install --no-cache-dir -c /tmp/constraints.txt \
+        "matplotlib>=3.3" "requests>=2.23" "polars>=0.20" "nvidia-ml-py>=12" && \
+    pip3 install --no-cache-dir --no-deps ultralytics-thop "ultralytics==${ULTRALYTICS_VER}" && \
+    rm -f /tmp/constraints.txt && \
+    python3 -c "import numpy, torch, torchvision, ultralytics; print('numpy', numpy.__version__, '| torch', torch.__version__, '| torchvision', torchvision.__version__, '| ultralytics', ultralytics.__version__)"
+
+# Login user. Its home (/home/studente) is a bind mount from the host,
+# so code, venvs, ~/.ssh and VS Code server survive container recreation.
+RUN groupadd -g 1000 studente && \
+    useradd -u 1000 -g 1000 -M -d /home/studente -s /bin/bash -G sudo studente && \
+    echo 'studente ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/studente && \
+    chmod 440 /etc/sudoers.d/studente
+
+# Italian time (the base image sets TZ=Asia/Shanghai).
+ENV TZ=Europe/Rome
+RUN ln -sf /usr/share/zoneinfo/Europe/Rome /etc/localtime && echo Europe/Rome > /etc/timezone
+
+# Make it obvious that the shell is inside the container:
+#  - remove the empty /home/agi left by the base image (WORKDIR /home/agi), which looks
+#    like the robot's home but is not;
+#  - prompt "(container-studenti)studente@agi:~$" (debian_chroot is used by the default
+#    /etc/bash.bashrc and ~/.bashrc prompts);
+#  - login banner instead of the "system has been minimized" message.
+RUN { rmdir /home/agi 2>/dev/null || true; } && \
+    echo container-studenti > /etc/debian_chroot && \
+    rm -f /etc/update-motd.d/10-help-text /etc/update-motd.d/50-motd-news /etc/update-motd.d/60-unminimize && \
+    printf '%s\n' \
+      '' \
+      '  Container studenti - AgiBot X2 (unita di sviluppo)' \
+      '  Sei DENTRO il container, non sul sistema del robot.' \
+      '  - i tuoi file: /home/studente (~), SDK in ~/aimdk' \
+      '  - sudo / apt valgono solo nel container (i pacchetti apt sono temporanei)' \
+      '  - prima di usare l SDK: source ~/aimdk/install/local_setup.bash' \
+      '' > /etc/motd
+
+COPY sshd-studenti.conf /etc/ssh/sshd_config.d/10-studenti.conf
+COPY entrypoint-studenti.sh /usr/local/sbin/entrypoint-studenti.sh
+RUN chmod 755 /usr/local/sbin/entrypoint-studenti.sh
+
+WORKDIR /home/studente
+
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/sbin/entrypoint-studenti.sh"]
+CMD []
