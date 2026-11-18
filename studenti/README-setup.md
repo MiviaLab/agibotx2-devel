@@ -29,6 +29,8 @@ Container options: the same as AgiBot's `run.sh`, with these differences:
 - device groups without `debug` and `run`;
 - read-only SSH host keys;
 - Italian time zone;
+- the students' SDK (`~/aimdk/install/local_setup.bash`) sourced automatically in every
+  interactive shell (`/etc/bash.bashrc`); each group builds its own workspace on top of it;
 - `--restart=always`.
 
 ---

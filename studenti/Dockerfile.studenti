@@ -100,8 +100,20 @@ RUN { rmdir /home/agi 2>/dev/null || true; } && \
       '  You are INSIDE the container, not on the robot system.' \
       '  - your files: /home/studente (~), SDK in ~/aimdk, guide in ~/STUDENT-GUIDE.md' \
       '  - sudo / apt only affect the container (apt packages are temporary)' \
-      '  - before using the SDK: source ~/aimdk/install/local_setup.bash' \
+      '  - ROS 2 and the AimDK SDK (~/aimdk) are loaded automatically' \
+      '  - your code: in your group workspace ~/<group>_ws (see ~/STUDENT-GUIDE.md)' \
       '' > /etc/motd
+
+# Load the students' AimDK workspace in every interactive shell (SSH, VS Code
+# terminals), after the host ROS sourced by the base image's /etc/bash.bashrc.
+# The groups' own workspaces are built and sourced as overlays on top of it.
+RUN printf '%s\n' \
+      '' \
+      '# AimDK SDK of the students (built with colcon in /home/studente/aimdk).' \
+      'if [ -f /home/studente/aimdk/install/local_setup.bash ]; then' \
+      '  source /home/studente/aimdk/install/local_setup.bash' \
+      'fi' \
+      >> /etc/bash.bashrc
 
 COPY sshd-studenti.conf /etc/ssh/sshd_config.d/10-studenti.conf
 COPY entrypoint-studenti.sh /usr/local/sbin/entrypoint-studenti.sh
