@@ -106,6 +106,7 @@ Firmware updates wipe the system but keep `/home/agi`:
 |---|---|
 | `/home/agi/aimdk` | SDK of the developer container |
 | `/home/agi/aimdk-image` | the files of this repository |
-| `/home/agi/studenti/agibotx2-students` | students' home (repository + SDK copy + their work) |
+| `/home/agi/studenti/agibotx2-students` | students' home (repository + SDK copy + their work); owned by the container user, updated with `git pull` from inside the container |
+| `/home/agi/agibotx2-students` | agi's working clone of the students' repository: edit, commit and push here |
 | `/home/agi/studenti/firmware` | firmware `aimdk_msgs` and URDF, refreshed by `setup-studenti.sh` |
 | `/home/agi/studenti/{config,secrets,sshd-keys,bin,build}` | DDS/env config, password hash, SSH host keys, installed scripts |

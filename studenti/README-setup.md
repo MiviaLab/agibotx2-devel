@@ -136,12 +136,22 @@ cd / && sudo -u studenti XDG_RUNTIME_DIR=/run/user/1101 podman <command>
 | `restart aimdk-studenti` | restart (apt packages are kept) |
 | `exec -it aimdk-studenti bash` | enter the container as root |
 
-**Updating the students' repository.** After the setup the repository belongs to the container
-user (a subordinate UID on the host), so run git from inside the container:
+**Updating the students' repository.** After the setup the mounted copy
+(`/home/agi/studenti/agibotx2-students`) belongs to the container user (a subordinate UID on the
+host): `agi` can neither read it fully nor run git on it ("dubious ownership"). Do not edit it
+directly. Instead:
 
-```bash
-ssh -p 2222 studente@10.0.10.201 'cd ~ && git pull'
-```
+1. Edit, commit and push in agi's own clone `~/agibotx2-students`
+   (`git clone https://github.com/MiviaLab/agibotx2-students.git ~/agibotx2-students` if missing).
+2. Update the students' home from inside the container:
+
+   ```bash
+   ssh -p 2222 studente@10.0.10.201 'cd ~ && git pull'
+   ```
+
+   If `git pull` refuses because of local changes in the mounted copy, align it with
+   `git fetch && git reset --hard origin/main` (ignored files such as the groups' `*_ws`
+   workspaces, `aimdk/build` and `aimdk/docs` are not touched).
 
 Backup of the students' work:
 
