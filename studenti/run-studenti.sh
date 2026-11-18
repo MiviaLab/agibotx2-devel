@@ -1,7 +1,9 @@
 #!/bin/bash
 # Create the student container. Same options as AgiBot's run.sh, except:
 #   - runs as host user "studenti" (container root = studenti, no sudo on host)
-#   - home /home/studente = /home/agi/studenti/home (contains the SDK copy ~/aimdk)
+#   - home /home/studente = /home/agi/studenti/agibotx2-students (the students'
+#     repository, with the SDK copy ~/aimdk, ~/foxglove and the guides)
+#   - firmware messages and URDF (copied by setup-studenti.sh) read-only in /opt/agibot
 #   - main process is sshd (port SSH_PORT), restart policy "always"
 # WARNING: recreating the container discards packages installed with apt.
 # Normally launched by setup-studenti.sh; by hand (as agi):
@@ -15,6 +17,7 @@ IMAGE="${IMAGE:-agi/aimdk-studenti:dev}"
 NAME="${NAME:-aimdk-studenti}"
 SSH_PORT="${SSH_PORT:-2222}"
 BASE="/home/agi/studenti"
+STUD_HOME="${STUD_HOME:-$BASE/agibotx2-students}"
 
 MOUNTS=()
 m() {
@@ -93,8 +96,12 @@ else
 fi
 m "$BASE/config/ros_dds_configuration.xml" /etc/ros_dds_configuration.xml
 
-# Student-specific persistent mounts.
-m "$BASE/home"            /home/studente               rw
+# Student-specific persistent mounts: the agibotx2-students repository is the home.
+[ -d "$STUD_HOME" ] || { echo "$STUD_HOME missing: clone agibotx2-students there" >&2; exit 1; }
+m "$STUD_HOME"            /home/studente               rw
+# Firmware aimdk_msgs and robot URDF (for Foxglove), refreshed by setup-studenti.sh.
+m "$BASE/firmware/aimdk_msgs" /opt/agibot/aimdk_msgs    ro
+m "$BASE/firmware/x2_urdf"    /opt/agibot/x2_urdf       ro
 m "$BASE/sshd-keys"       /etc/ssh/keys                ro
 m "$BASE/secrets/studente.hash" /run/secrets/studente.hash ro
 

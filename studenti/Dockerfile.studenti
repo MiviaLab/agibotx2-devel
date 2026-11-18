@@ -17,7 +17,7 @@ RUN apt-get update && \
     sed -i -E 's/^(session\s+)required(\s+pam_loginuid\.so)/\1optional\2/' /etc/pam.d/sshd
 
 # ---------------------------------------------------------------------------
-# GPU deep learning stack: PyTorch (CUDA) + Ultralytics YOLO.
+# GPU deep learning stack: PyTorch (CUDA) + Ultralytics YOLO + Whisper.
 # Matches the robot: Jetson Orin NX, JetPack 6.2 (L4T R36.4), CUDA 12.6.
 # The GPU driver, cuDNN 9.3 and TensorRT 10.7 come from the host at runtime
 # (--device nvidia.com/gpu=all): do NOT install libcudnn here, the CDI mounts
@@ -34,6 +34,8 @@ ARG TORCHVISION_WHL=https://github.com/ultralytics/assets/releases/download/v0.0
 # cuSPARSELt: required by this torch build, not in the Jetson apt repo.
 ARG CUSPARSELT_URL=https://developer.download.nvidia.com/compute/cusparselt/redist/libcusparse_lt/linux-aarch64/libcusparse_lt-linux-aarch64-0.7.1.0-archive.tar.xz
 ARG ULTRALYTICS_VER=8.4.215
+# Whisper speech-to-text (audio_transcriber example), runs on this torch.
+ARG WHISPER_VER=20250625
 # numpy must stay 1.x and match the host (1.26.1): the host /opt/ros CMake
 # configs use the host numpy headers, which run-studenti.sh mounts read-only
 # over /usr/local/lib/python3.10/dist-packages/numpy/core/include.
@@ -66,11 +68,14 @@ RUN printf 'numpy==%s\n' "${NUMPY_VER}" > /tmp/constraints.txt && \
     pip3 install --no-cache-dir -c /tmp/constraints.txt \
         "matplotlib>=3.3" "requests>=2.23" "polars>=0.20" "nvidia-ml-py>=12" && \
     pip3 install --no-cache-dir --no-deps ultralytics-thop "ultralytics==${ULTRALYTICS_VER}" && \
+    pip3 install --no-cache-dir -c /tmp/constraints.txt "openai-whisper==${WHISPER_VER}" && \
     rm -f /tmp/constraints.txt && \
-    python3 -c "import numpy, torch, torchvision, ultralytics; print('numpy', numpy.__version__, '| torch', torch.__version__, '| torchvision', torchvision.__version__, '| ultralytics', ultralytics.__version__)"
+    # torch cannot be imported here: cuDNN is only mounted from the host at runtime.
+    pip3 show numpy torch torchvision ultralytics openai-whisper | grep -E '^(Name|Version):'
 
-# Login user. Its home (/home/studente) is a bind mount from the host,
-# so code, venvs, ~/.ssh and VS Code server survive container recreation.
+# Login user. Its home (/home/studente) is a bind mount of the agibotx2-students
+# repository on the host, so code, venvs, ~/.ssh and VS Code server survive
+# container recreation.
 RUN groupadd -g 1000 studente && \
     useradd -u 1000 -g 1000 -M -d /home/studente -s /bin/bash -G sudo studente && \
     echo 'studente ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/studente && \
@@ -91,11 +96,11 @@ RUN { rmdir /home/agi 2>/dev/null || true; } && \
     rm -f /etc/update-motd.d/10-help-text /etc/update-motd.d/50-motd-news /etc/update-motd.d/60-unminimize && \
     printf '%s\n' \
       '' \
-      '  Container studenti - AgiBot X2 (unita di sviluppo)' \
-      '  Sei DENTRO il container, non sul sistema del robot.' \
-      '  - i tuoi file: /home/studente (~), SDK in ~/aimdk' \
-      '  - sudo / apt valgono solo nel container (i pacchetti apt sono temporanei)' \
-      '  - prima di usare l SDK: source ~/aimdk/install/local_setup.bash' \
+      '  Student container - AgiBot X2 (development unit)' \
+      '  You are INSIDE the container, not on the robot system.' \
+      '  - your files: /home/studente (~), SDK in ~/aimdk, guide in ~/STUDENT-GUIDE.md' \
+      '  - sudo / apt only affect the container (apt packages are temporary)' \
+      '  - before using the SDK: source ~/aimdk/install/local_setup.bash' \
       '' > /etc/motd
 
 COPY sshd-studenti.conf /etc/ssh/sshd_config.d/10-studenti.conf

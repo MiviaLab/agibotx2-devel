@@ -8,16 +8,18 @@
 #                    (discards packages installed with apt inside the container)
 #   --recreate       recreate the container from the existing image (after changing
 #                    run-studenti.sh; discards packages installed with apt)
-#   --refresh-msgs   re-sync src/aimdk_msgs of the student SDK copy from ~/aimdk
+#   --refresh-msgs   re-sync aimdk/src/aimdk_msgs of the students' repository from ~/aimdk
 #                    (after an SDK/firmware update; the students' own code is untouched)
-# Env: SSH_PORT (default 2222)
+# Env: SSH_PORT (default 2222), STUDENTS_REPO (git URL cloned if the repository is missing)
 #
 # Idempotent: safe to run again. What it does:
 #   1. host user "studenti" (UID 1101): no sudo, password locked, no shell, SSH login denied
 #   2. /etc/subuid, /etc/subgid entries for rootless podman (+ device groups)
 #   3. /home/agi: "others" may traverse it (o+x) but not list it; agi's top-level
 #      entries lose "others" permissions so studenti cannot read them
-#   4. /home/agi/studenti (persistent across firmware updates): SDK copy, config, keys
+#   4. /home/agi/studenti (persistent across firmware updates): config, keys, the
+#      agibotx2-students repository (= students' home, with the SDK copy) and a
+#      copy of the firmware messages + robot URDF for Foxglove
 #   5. image agi/aimdk-studenti:dev (from agi/aimdk-dev:dev), container aimdk-studenti,
 #      autostart at boot (linger + podman-restart.service)
 set -euo pipefail
@@ -31,6 +33,10 @@ AGI=agi
 AGI_HOME=/home/agi
 BASE=$AGI_HOME/studenti
 SDK_SRC=$AGI_HOME/aimdk
+STUD_HOME=$BASE/agibotx2-students
+STUDENTS_REPO="${STUDENTS_REPO:-https://github.com/MiviaLab/agibotx2-students.git}"
+FW_COMMON=/agibot/software/common
+FW_URDF=/agibot/software/aimdk/extra/mc-rl/x2_urdf/X2_URDF-v1.3.0
 SUB_START=231072
 SUB_COUNT=65536
 DEV_GROUPS=(dialout audio video input render)
@@ -102,7 +108,7 @@ stat -c '   %A %U:%G %n' "$AGI_HOME"
 
 # ---------------------------------------------------------------- 4. directories, config
 say "4. $BASE"
-mkdir -p "$BASE"/{home,config,secrets,sshd-keys,bin,build}
+mkdir -p "$BASE"/{config,secrets,sshd-keys,bin,build,firmware}
 chown "$U:$AGI" "$BASE"; chmod 750 "$BASE"           # agi (group) can look inside
 chown -R "$U:$U" "$BASE"/{config,secrets,sshd-keys,bin,build}
 chmod 700 "$BASE"/{secrets,sshd-keys}
@@ -120,17 +126,50 @@ for f in Dockerfile.studenti sshd-studenti.conf entrypoint-studenti.sh; do
 done
 install -o "$U" -g "$U" -m 755 "$HERE/run-studenti.sh" "$BASE/bin/run-studenti.sh"
 
-# ---------------------------------------------------------------- SDK copy
-if [ ! -d "$BASE/home/aimdk" ]; then
-  say "   Copying the SDK (without build/install/log) to $BASE/home/aimdk"
-  rsync -a --exclude=/build --exclude=/install --exclude=/log --exclude='.*.swp' \
-        "$SDK_SRC/" "$BASE/home/aimdk/"
-elif [ "$OPT_REFRESH" -eq 1 ]; then
+# ---------------------------------------------------------------- students' repository (home)
+if [ ! -d "$STUD_HOME/aimdk" ]; then
+  say "   Cloning $STUDENTS_REPO into $STUD_HOME"
+  git clone "$STUDENTS_REPO" "$STUD_HOME"
+fi
+# The AgiBot HTML docs are not versioned (too big): copy them from the robot's SDK.
+if [ ! -d "$STUD_HOME/aimdk/docs" ] && [ -d "$SDK_SRC/docs" ]; then
+  say "   Copying the SDK documentation to $STUD_HOME/aimdk/docs"
+  rsync -a "$SDK_SRC/docs/" "$STUD_HOME/aimdk/docs/"
+fi
+if [ "$OPT_REFRESH" -eq 1 ]; then
   say "   Re-syncing src/aimdk_msgs and version from $SDK_SRC"
-  rsync -a --delete "$SDK_SRC/src/aimdk_msgs/" "$BASE/home/aimdk/src/aimdk_msgs/"
-  cp "$SDK_SRC/version" "$BASE/home/aimdk/version"
+  rsync -a --delete "$SDK_SRC/src/aimdk_msgs/" "$STUD_HOME/aimdk/src/aimdk_msgs/"
+  cp "$SDK_SRC/version" "$STUD_HOME/aimdk/version"
   echo "   Students must rebuild: rm -rf ~/aimdk/build/aimdk_msgs ~/aimdk/install/aimdk_msgs && colcon build"
 fi
+
+# ---------------------------------------------------------------- firmware files for Foxglove
+# The container cannot read /agibot/software (root:manager 750): copy the firmware
+# aimdk_msgs (more complete than the public SDK) and the robot URDF + meshes.
+# run-studenti.sh mounts them read-only in /opt/agibot. Refreshed at every run,
+# so after a firmware update it is enough to run this script again.
+say "   Copying firmware messages and URDF to $BASE/firmware"
+R=share/ament_index/resource_index
+F=$BASE/firmware/aimdk_msgs
+if [ -d "$FW_COMMON/share/aimdk_msgs" ]; then
+  rm -rf "$F"
+  mkdir -p "$F/lib" "$F/share" "$F/$R/packages" "$F/$R/rosidl_interfaces"
+  cp -r "$FW_COMMON/share/aimdk_msgs" "$F/share/aimdk_msgs"
+  cp "$FW_COMMON/$R/packages/aimdk_msgs" "$F/$R/packages/"
+  cp "$FW_COMMON/$R/rosidl_interfaces/aimdk_msgs" "$F/$R/rosidl_interfaces/"
+  cp -L "$FW_COMMON"/lib/libaimdk_msgs__* "$F/lib/"
+  echo "   $(ls "$F/share/aimdk_msgs/msg" | wc -l) firmware messages"
+else
+  echo "   WARNING: $FW_COMMON/share/aimdk_msgs not found, Foxglove will miss firmware messages" >&2
+fi
+if [ -f "$FW_URDF/x2_ultra.urdf" ]; then
+  mkdir -p "$BASE/firmware/x2_urdf"
+  rsync -a --delete --include=/x2_ultra.urdf --include=/meshes/ --include='/meshes/**' --exclude='*' \
+        "$FW_URDF/" "$BASE/firmware/x2_urdf/"
+else
+  echo "   WARNING: $FW_URDF/x2_ultra.urdf not found, no 3D model in Foxglove" >&2
+fi
+chown -R "$U:$U" "$BASE/firmware"; chmod -R a+rX "$BASE/firmware"
 
 # ---------------------------------------------------------------- password
 if [ ! -s "$BASE/secrets/studente.hash" ] || [ "$OPT_PASSWORD" -eq 1 ]; then
@@ -173,9 +212,11 @@ for _ in $(seq 1 30); do [ -S "/run/user/$UID_S/bus" ] && break; sleep 1; done
 as_stud podman system migrate >/dev/null 2>&1 || true
 
 # Home of "studente" (container UID 1000) must be owned by that UID as seen by podman.
-chown -R "$U:$U" "$BASE/home"
-as_stud podman unshare chown -R 1000:1000 "$BASE/home"
-chmod 755 "$BASE/home"
+# Note: on the host the repository then belongs to a subordinate UID; use git from
+# inside the container (as studente) or with sudo.
+chown -R "$U:$U" "$STUD_HOME"
+as_stud podman unshare chown -R 1000:1000 "$STUD_HOME"
+chmod 755 "$STUD_HOME"
 
 # SSH host keys of the container: generated here (keeping existing ones) and mounted
 # read-only, so nobody inside the container (not even with sudo) can change them.
