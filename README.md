@@ -30,7 +30,7 @@ agibotx2-devel/
 │   └── README-dev.md             how to use aimdk-dev
 └── studenti/                     student container
     ├── Dockerfile.studenti       image agi/aimdk-studenti:dev = base + SSH, sudo, user
-    │                             "studente", PyTorch GPU, YOLO, Whisper
+    │                             "studente", PyTorch GPU, YOLO, Whisper, Piper TTS
     ├── entrypoint-studenti.sh    container main process: prepares and runs sshd
     ├── sshd-studenti.conf        SSH server configuration of the container
     ├── run-studenti.sh           creates container aimdk-studenti (adapted from base/run.sh)

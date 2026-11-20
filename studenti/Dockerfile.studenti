@@ -17,7 +17,8 @@ RUN apt-get update && \
     sed -i -E 's/^(session\s+)required(\s+pam_loginuid\.so)/\1optional\2/' /etc/pam.d/sshd
 
 # ---------------------------------------------------------------------------
-# GPU deep learning stack: PyTorch (CUDA) + Ultralytics YOLO + Whisper.
+# GPU deep learning stack: PyTorch (CUDA) + Ultralytics YOLO + ONNX Runtime
+# (TensorRT/CUDA) for Whisper + Silero VAD + Piper TTS.
 # Matches the robot: Jetson Orin NX, JetPack 6.2 (L4T R36.4), CUDA 12.6.
 # The GPU driver, cuDNN 9.3 and TensorRT 10.7 come from the host at runtime
 # (--device nvidia.com/gpu=all): do NOT install libcudnn here, the CDI mounts
@@ -34,8 +35,19 @@ ARG TORCHVISION_WHL=https://github.com/ultralytics/assets/releases/download/v0.0
 # cuSPARSELt: required by this torch build, not in the Jetson apt repo.
 ARG CUSPARSELT_URL=https://developer.download.nvidia.com/compute/cusparselt/redist/libcusparse_lt/linux-aarch64/libcusparse_lt-linux-aarch64-0.7.1.0-archive.tar.xz
 ARG ULTRALYTICS_VER=8.4.215
-# Whisper speech-to-text (audio_transcriber example), runs on this torch.
-ARG WHISPER_VER=20250625
+# Whisper speech-to-text (audio_transcriber example): ONNX model exported with
+# optimum, run by ONNX Runtime with TensorRT (fp16) or CUDA. onnxruntime-gpu for
+# JetPack 6 / CUDA 12.6 (sm_87, TensorRT 10 EP) from the Jetson AI Lab index: the
+# PyPI "onnxruntime" wheels are CPU only and must NOT be installed next to it.
+ARG ORT_GPU_INDEX=https://pypi.jetson-ai-lab.io/jp6/cu126/+simple
+ARG ORT_GPU_VER=1.23.0
+ARG TRANSFORMERS_VER=4.53.2
+ARG OPTIMUM_VER=2.1.0
+ARG OPTIMUM_ONNX_VER=0.1.0
+ARG SILERO_VAD_VER=6.2.3
+# Piper text-to-speech (italian_piper_tts example), runs on the same onnxruntime-gpu.
+ARG PIPER_TTS_VER=1.8.0
+ARG PATHVALIDATE_VER=3.3.1
 # numpy must stay 1.x and match the host (1.26.1): the host /opt/ros CMake
 # configs use the host numpy headers, which run-studenti.sh mounts read-only
 # over /usr/local/lib/python3.10/dist-packages/numpy/core/include.
@@ -50,7 +62,7 @@ RUN curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
         cuda-cudart-${CUDA_VER} cuda-nvrtc-${CUDA_VER} cuda-cupti-${CUDA_VER} cuda-nvtx-${CUDA_VER} \
         libcublas-${CUDA_VER} libcufft-${CUDA_VER} libcurand-${CUDA_VER} \
         libcusolver-${CUDA_VER} libcusparse-${CUDA_VER} libnvjitlink-${CUDA_VER} \
-        libopenblas0 && \
+        libcudla-${CUDA_VER} libopenblas0 libsndfile1 && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
     curl -fsSL "${CUSPARSELT_URL}" | tar -xJ -C /tmp && \
     cp -P /tmp/libcusparse_lt-*/lib/libcusparseLt.so* /usr/local/cuda/targets/aarch64-linux/lib/ && \
@@ -68,10 +80,19 @@ RUN printf 'numpy==%s\n' "${NUMPY_VER}" > /tmp/constraints.txt && \
     pip3 install --no-cache-dir -c /tmp/constraints.txt \
         "matplotlib>=3.3" "requests>=2.23" "polars>=0.20" "nvidia-ml-py>=12" && \
     pip3 install --no-cache-dir --no-deps ultralytics-thop "ultralytics==${ULTRALYTICS_VER}" && \
-    pip3 install --no-cache-dir -c /tmp/constraints.txt "openai-whisper==${WHISPER_VER}" && \
+    pip3 install --no-cache-dir -c /tmp/constraints.txt --extra-index-url "${ORT_GPU_INDEX}" \
+        "onnxruntime-gpu==${ORT_GPU_VER}" "transformers==${TRANSFORMERS_VER}" \
+        "optimum==${OPTIMUM_VER}" "optimum-onnx==${OPTIMUM_ONNX_VER}" soundfile scipy && \
+    # --no-deps: its dependencies would pull the CPU onnxruntime and torchaudio.
+    pip3 install --no-cache-dir --no-deps "silero-vad==${SILERO_VAD_VER}" && \
+    # --no-deps: piper-tts depends on the CPU onnxruntime; pathvalidate is its other dependency.
+    pip3 install --no-cache-dir --no-deps "piper-tts==${PIPER_TTS_VER}" \
+        "pathvalidate==${PATHVALIDATE_VER}" && \
     rm -f /tmp/constraints.txt && \
-    # torch cannot be imported here: cuDNN is only mounted from the host at runtime.
-    pip3 show numpy torch torchvision ultralytics openai-whisper | grep -E '^(Name|Version):'
+    # torch / onnxruntime cannot use the GPU here: cuDNN and TensorRT are only mounted
+    # from the host at runtime.
+    pip3 show numpy torch torchvision ultralytics onnxruntime-gpu transformers optimum silero-vad piper-tts \
+        | grep -E '^(Name|Version):'
 
 # Login user. Its home (/home/studente) is a bind mount of the agibotx2-students
 # repository on the host, so code, venvs, ~/.ssh and VS Code server survive

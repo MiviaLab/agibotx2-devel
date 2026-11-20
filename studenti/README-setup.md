@@ -41,7 +41,7 @@ Container options: the same as AgiBot's `run.sh`, with these differences:
 |---|---|---|
 | `base/Dockerfile` | `~/aimdk-image/` | official AgiBot image `agi/aimdk-dev:dev` |
 | `base/run.sh` | `~/aimdk-image/` | official `aimdk-dev` container for `agi` (not needed by the students) |
-| `studenti/Dockerfile.studenti` | `~/aimdk-image/studenti/` | student image (official + SSH, sudo, user `studente`, PyTorch GPU + YOLO + Whisper) |
+| `studenti/Dockerfile.studenti` | `~/aimdk-image/studenti/` | student image (official + SSH, sudo, user `studente`, PyTorch GPU + YOLO + Whisper + Piper TTS) |
 | `studenti/entrypoint-studenti.sh` | `~/aimdk-image/studenti/` | container startup: prepares and launches `sshd` |
 | `studenti/sshd-studenti.conf` | `~/aimdk-image/studenti/` | SSH configuration of the container |
 | `studenti/run-studenti.sh` | `~/aimdk-image/studenti/` | creates the container (adapted version of `run.sh`) |
@@ -49,10 +49,11 @@ Container options: the same as AgiBot's `run.sh`, with these differences:
 
 ---
 
-## GPU libraries (PyTorch, YOLO, Whisper)
+## GPU libraries (PyTorch, YOLO, Whisper, Piper)
 
 The student image includes PyTorch with GPU, Ultralytics YOLO (example
-`ros2 run py_examples yolo_detection`) and Whisper (example `audio_transcriber`). Versions,
+`ros2 run py_examples yolo_detection`), Whisper (example `audio_transcriber`, ONNX model run by
+ONNX Runtime with TensorRT) and Piper text-to-speech (example `italian_piper_tts`). Versions,
 aligned with the robot (Jetson Orin NX, JetPack 6.2):
 
 | Component | Version | Source |
@@ -63,13 +64,23 @@ aligned with the robot (Jetson Orin NX, JetPack 6.2):
 | PyTorch / torchvision | 2.5.0 (nv24.08) / 0.20.0 | packages for JetPack 6 |
 | numpy | 1.26.1 | pip, same as the robot |
 | Ultralytics | 8.4.215 | pip, without `opencv-python` (uses ROS's OpenCV 4.5.4) |
-| openai-whisper | 20250625 | pip |
+| onnxruntime-gpu | 1.23.0 (with TensorRT and CUDA providers) | pip, Jetson AI Lab index `jp6/cu126` (needs apt `libcudla-12-6`) |
+| transformers / optimum / optimum-onnx | 4.53.2 / 2.1.0 / 0.1.0 | pip (Whisper export and inference) |
+| silero-vad | 6.2.3 | pip, `--no-deps` |
+| piper-tts / pathvalidate | 1.8.0 / 3.3.1 | pip, `--no-deps` |
 
 - cuDNN must **not** be installed in the image: the one mounted from the robot would end up on top of it.
 - numpy must stay 1.x: the container mounts the robot's numpy headers read-only
   (`/usr/local/lib/python3.10/dist-packages/numpy/core/include`), which the host's ROS needs.
 - If a firmware update changes JetPack, update `JETPACK_REPO`, `CUDA_VER` and the torch
   packages at the top of the GPU section of `Dockerfile.studenti`, then `--rebuild`.
+- Never install the PyPI `onnxruntime` package: it is CPU only and hides `onnxruntime-gpu`.
+  `silero-vad` and `piper-tts` depend on it, which is why they are installed with `--no-deps`.
+  Check also the students' `~/.local`: a `pip install --user` there hides the image packages.
+- The models are in the students' repository, not in the image: the Piper voice in
+  `aimdk/models/piper/` (versioned), Whisper in `aimdk/models/whisper/` (about 4 GB, not
+  versioned: `audio_transcriber` downloads and exports it on its first start, about 10 minutes,
+  and caches the TensorRT engines in `trt_cache/`; delete that folder after a TensorRT update).
 - The `yolo11n.pt` model lives in the students' repository
   (`aimdk/src/py_examples/py_examples/data/`), not in the image.
 
